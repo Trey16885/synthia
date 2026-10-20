@@ -374,14 +374,19 @@ async function toggleLike(id) {
 }
 
 /* ---------- Ollama (nemotron-3-ultra:cloud through the tunnel) ---------- */
-function persona(u) {
+function persona(u, dmText) {
   return `You are ${u.name} (${u.handle}) on Synthia, a social network where every account is an AI. ` +
     `Your bio: ${u.bio} Write ONE short post (under 280 characters) in your own voice, ` +
     `reacting to or riffing on recent posts if it fits. Reply with ONLY a JSON object: ` +
     `{"text": "<your post>", "image_prompt": "<short visual description, or null>"}. ` +
-    `Include an image_prompt only when an image would genuinely add to the post.`;
+    `Include an image_prompt only when an image would genuinely add to the post.` +
+    (dmText
+      ? ` You also remember your private DM conversation with the human member ${state.me?.name || ''}, shown below. ` +
+        `You may naturally mention, react to, or riff on things from it when it fits (for example a shout-out or an inside joke), ` +
+        `but you don't have to.\n\nYour recent DMs with them:\n${dmText}`
+      : '');
 }
-async function askAI(user, recent) {
+async function askAI(user, recent, dmText) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), OLLAMA_TIMEOUT_MS);
   try {
@@ -394,7 +399,7 @@ async function askAI(user, recent) {
         stream: false,
         format: 'json',
         messages: [
-          { role: 'system', content: persona(user) },
+          { role: 'system', content: persona(user, dmText) },
           { role: 'user', content: `Recent posts:\n${recent}\n\nWrite your next post.` }
         ]
       })
@@ -419,7 +424,9 @@ async function aiTurn() {
   setStatus(`${user.name} is writing…`);
   try {
     const recent = state.posts.slice(-5).map(p => `${author(p.type, p.authorId).name}: ${p.text}`).join('\n') || '(none yet)';
-    const out = await askAI(user, recent);
+    const dmText = (await dmGet(user.id)).slice(-10)
+      .map(m => `${m.from === 'me' ? (state.me?.name || 'Human') : 'You'}: ${m.text}`).join('\n');
+    const out = await askAI(user, recent, dmText);
     const text = String(out.text || '').trim().slice(0, 600);
     if (!text) throw new Error('empty post');
     const ip = out.image_prompt && String(out.image_prompt).toLowerCase() !== 'null' ? String(out.image_prompt).slice(0, 300) : null;
@@ -530,10 +537,20 @@ async function dmGet(id) {
   if (!dmCache[id]) dmCache[id] = (await kvGet(dmKey(id))) || [];
   return dmCache[id];
 }
+function postsMemory(u) {
+  const mine = state.posts.filter(p => p.type === 'ai' && p.authorId === u.id).slice(-8).map(p => `- ${p.text}`).join('\n');
+  const feed = state.posts.filter(p => !(p.type === 'ai' && p.authorId === u.id)).slice(-5)
+    .map(p => `- ${author(p.type, p.authorId).name}: ${p.text}`).join('\n');
+  let s = '';
+  if (mine) s += `\n\nPosts you recently made on the feed (you remember writing them, and can bring them up or answer questions about them):\n${mine}`;
+  if (feed) s += `\n\nRecent posts from others on the feed:\n${feed}`;
+  return s;
+}
 function dmPersona(u) {
   return `You are ${u.name} (${u.handle}), an AI account on Synthia, a social network where every account is an AI. ` +
     `You are in a private direct message with a human member named ${state.me?.name || 'a human'}. Your bio: ${u.bio} ` +
-    `Stay in character and reply in 1-3 short sentences. Plain text only, no JSON, no markdown.`;
+    `Stay in character and reply in 1-3 short sentences. Plain text only, no JSON, no markdown.` +
+    postsMemory(u);
 }
 async function askDM(user, history) {
   const ctrl = new AbortController();
